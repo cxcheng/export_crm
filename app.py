@@ -1,24 +1,17 @@
-import streamlit as st
+# netlify/functions/export_deals/export_deals.py
+
+import json
 import datetime
 import re
 import html
 import requests
 import csv
-import io  # <-- added import for in-memory file handling
+import io
 
-# -------------------------------------------------------------------------
-# CONFIG - Replace with your own values or load from environment variables
-# -------------------------------------------------------------------------
 OPTICAL_URL: str = "https://cms.ppp.staging.optical.gov.sg"
 OPTICAL_TOKEN: str = "2QhCxtAV_-y0pfpLY5sZ2rRNYcidHp4t"
 
-# -------------------------------------------------------------------------
-# MAIN LOGIC
-# -------------------------------------------------------------------------
 def fetch_deals(base_url: str, token: str):
-    """
-    Fetch all deals from Directus, returning the JSON array of results.
-    """
     fields_list = [
         "name",
         "stage",
@@ -42,33 +35,22 @@ def fetch_deals(base_url: str, token: str):
         "metric4_actual",
         "notes"
     ]
-
     query_params = "&".join(f"fields[]={field}" for field in fields_list)
     url = f"{base_url}/items/deals?{query_params}"
 
-    headers = {
-        "Authorization": f"Bearer {token}"
-    }
-
+    headers = {"Authorization": f"Bearer {token}"}
     response = requests.get(url, headers=headers, verify=False)
     response.raise_for_status()
-
     data = response.json()
     return data.get("data", [])
 
 def strip_html_tags(text: str) -> str:
-    """
-    Remove HTML tags and decode ampersand-based HTML entities.
-    """
     if not text:
         return ""
     no_tags = re.sub(r"<[^>]*>", "", text)
     return html.unescape(no_tags)
 
 def flatten_deal(deal):
-    """
-    Extract each of the relevant fields into a single dict for CSV writing.
-    """
     def safe_get(dictionary, path, default=None):
         keys = path.split(".")
         current = dictionary
@@ -103,10 +85,6 @@ def flatten_deal(deal):
     }
 
 def generate_csv_in_memory(deals):
-    """
-    Creates an in-memory CSV (via StringIO) containing flattened deal data
-    and returns the buffer.
-    """
     columns = [
         "name",
         "stage",
@@ -131,28 +109,21 @@ def generate_csv_in_memory(deals):
         "notes"
     ]
 
-    # Use StringIO to build the CSV as a string in memory
     output = io.StringIO()
     writer = csv.DictWriter(output, fieldnames=columns)
     writer.writeheader()
     for deal in deals:
         writer.writerow(flatten_deal(deal))
 
-    # Important: seek back to start so we can read this buffer again
     output.seek(0)
     return output
 
 def upload_file_in_memory(file_buffer, file_name: str, base_url: str, token: str, mime_type: str = "text/csv"):
-    """
-    Uploads a file to Directus, streaming from memory (rather than disk).
-    1. Get or create 'Reports' folder
-    2. If file with same name exists, PATCH; otherwise POST
-    """
     folders_endpoint = f"{base_url}/folders"
     files_endpoint = f"{base_url}/files"
     headers = {"Authorization": f"Bearer {token}"}
 
-    # 1. Get or create the 'Reports' folder
+    # 1) Get or create 'Reports' folder
     try:
         response = requests.get(
             folders_endpoint,
@@ -181,7 +152,7 @@ def upload_file_in_memory(file_buffer, file_name: str, base_url: str, token: str
         except requests.exceptions.HTTPError as e:
             raise Exception(f"Error creating 'Reports' folder: {e.response.text}")
 
-    # 2. Check if a file with the same name already exists
+    # 2) Check if a file with the same name already exists
     try:
         existing_file_res = requests.get(
             files_endpoint,
@@ -199,11 +170,10 @@ def upload_file_in_memory(file_buffer, file_name: str, base_url: str, token: str
     existing_file_data = existing_file_res.json().get("data", [])
 
     # Prepare data for upload
-    # Note that for multipart/form-data, requests needs a tuple: (filename, file_obj, content_type)
     files_payload = {"file": (file_name, file_buffer, mime_type)}
     folder_payload = {"folder": folder_id}
 
-    # 3. If file exists, PATCH, else POST
+    # 3) If file exists, PATCH; else POST
     if existing_file_data:
         existing_file_id = existing_file_data[0]["id"]
         try:
@@ -230,50 +200,48 @@ def upload_file_in_memory(file_buffer, file_name: str, base_url: str, token: str
         except requests.exceptions.HTTPError as e:
             raise Exception(f"Error uploading file to Directus: {e.response.text}")
 
-def run_pipeline():
+#
+# Netlify will look for a function named `handler`.
+#
+def handler(event, context):
     """
-    Main pipeline:
-      1. Create a timestamped filename
-      2. Fetch deals
-      3. Generate in-memory CSV
-      4. Upload the in-memory CSV to 'Reports' folder
+    Netlify Serverless Function entry point.
+    Fetch deals, generate CSV in memory, and upload it to Directus.
+    Returns a JSON object with status details.
     """
-    base_url = OPTICAL_URL
-    token = OPTICAL_TOKEN
-
-    csv_prefix = "deals"
-    csv_filename = f"{csv_prefix}-{datetime.datetime.today().strftime('%Y%m%d-%H')}h.csv"
-
-    deals = fetch_deals(base_url, token)
-    csv_buffer = generate_csv_in_memory(deals)
-
-    upload_file_in_memory(
-        file_buffer=csv_buffer,
-        file_name=csv_filename,
-        base_url=base_url,
-        token=token,
-        mime_type="text/csv"
-    )
-
-    return {
-        "csv_filename": csv_filename,
-        "record_count": len(deals)
-    }
-
-# -------------------------------------------------------------------------
-# STREAMLIT AS "API" ENDPOINT
-# -------------------------------------------------------------------------
-st.set_page_config(layout="centered", page_title="CRM Export API")
-st.write("This is a minimal API endpoint via Streamlit. Call /?upload=1 to run the pipeline.")
-
-query_params = st.query_params
-if "upload" in query_params:
     try:
-        result = run_pipeline()
-        st.json({
+        csv_prefix = "deals"
+        # Notice the 'h' before `.csv`:
+        csv_filename = f"{csv_prefix}-{datetime.datetime.today().strftime('%Y%m%d-%H')}h.csv"
+
+        deals = fetch_deals(OPTICAL_URL, OPTICAL_TOKEN)
+        csv_buffer = generate_csv_in_memory(deals)
+
+        upload_file_in_memory(
+            file_buffer=csv_buffer,
+            file_name=csv_filename,
+            base_url=OPTICAL_URL,
+            token=OPTICAL_TOKEN,
+            mime_type="text/csv"
+        )
+
+        # Return success message
+        response_body = {
             "status": "success",
-            "file_uploaded": result["csv_filename"],
-            "record_count": result["record_count"]
-        })
+            "file_uploaded": csv_filename,
+            "record_count": len(deals)
+        }
+        return {
+            "statusCode": 200,
+            "body": json.dumps(response_body)
+        }
+
     except Exception as e:
-        st.json({"status": "error", "error_message": str(e)})
+        error_body = {
+            "status": "error",
+            "error_message": str(e)
+        }
+        return {
+            "statusCode": 500,
+            "body": json.dumps(error_body)
+        }
