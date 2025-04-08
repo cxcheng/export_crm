@@ -1,0 +1,12 @@
+[build]
+  command = "pip install -r requirements.txt"
+  publish = "."
+
+[functions]
+  directory = "functions"
+
+[[redirects]]
+  from = "/*"
+  to = "/.netlify/functions/wsgi_handler"
+  status = 200
+
