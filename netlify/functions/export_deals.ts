@@ -1,297 +1,269 @@
-import {Handler} from "@netlify/functions";
-import axios from "axios";
-import FormData from "form-data";
-import {stringify} from "csv-stringify/sync";
-import fetch from "node-fetch"; // or a different HTTP client if you prefer
+// netlify/functions/export_deals.ts
 
+import { Handler } from '@netlify/functions';
+import axios from 'axios';
+import FormData from 'form-data';
+import { stringify } from 'csv-stringify/sync';
 
-// -----------------------------------------------------------------------------
-// CONFIG: Replace with your actual values (or fetch from environment variables)
-// -----------------------------------------------------------------------------
-const OPTICAL_URL = "https://cms.ppp.staging.optical.gov.sg";
-const OPTICAL_TOKEN = "2QhCxtAV_-y0pfpLY5sZ2rRNYcidHp4t";
+const OPTICAL_URL = process.env.OPTICAL_URL;
+const OPTICAL_TOKEN = process.env.OPTICAL_TOKEN;
 
-// -----------------------------------------------------------------------------
-// 1. FETCH DEALS
-// -----------------------------------------------------------------------------
+if (!OPTICAL_URL || !OPTICAL_TOKEN) {
+    throw new Error('Missing required environment variables: OPTICAL_URL or OPTICAL_TOKEN');
+}
+
+/**
+ * Fields to fetch for each deal.
+ */
+const fieldsList = [
+    'name',
+    'stage',
+    'product.name',
+    'value',
+    'owner.email',
+    'organization.name',
+    'contact.email',
+    'referrer.email',
+    'engagement.name',
+    'engagement.date',
+    'metrics.product.name',
+    'metrics.label',
+    'metric1_estimated',
+    'metric1_actual',
+    'metric2_estimated',
+    'metric2_actual',
+    'metric3_estimated',
+    'metric3_actual',
+    'metric4_estimated',
+    'metric4_actual',
+    'notes',
+];
+
+/**
+ * 1) Fetch deals from Directus/Optical
+ */
 async function fetchDeals(baseUrl: string, token: string): Promise<any[]> {
-    const fieldsList = [
-        "name",
-        "stage",
-        "product.name",
-        "value",
-        "owner.email",
-        "organization.name",
-        "contact.email",
-        "referrer.email",
-        "engagement.name",
-        "engagement.date",
-        "metrics.product.name",
-        "metrics.label",
-        "metric1_estimated",
-        "metric1_actual",
-        "metric2_estimated",
-        "metric2_actual",
-        "metric3_estimated",
-        "metric3_actual",
-        "metric4_estimated",
-        "metric4_actual",
-        "notes",
-    ];
-    const queryParams = fieldsList.map((f) => `fields[]=${f}`).join("&");
+    const queryParams = fieldsList.map((f) => `fields[]=${encodeURIComponent(f)}`).join('&');
     const url = `${baseUrl}/items/deals?${queryParams}`;
 
-    const headers = {Authorization: `Bearer ${token}`};
-
-    const response = await axios.get(url, {
-        headers,
-        // Disabling certificate verification is not recommended, but shown here
-        // just to match your original Python code's verify=False usage:
-        httpsAgent: new (require("https").Agent)({rejectUnauthorized: false})
-    });
+    const headers = { Authorization: `Bearer ${token}` };
+    const response = await axios.get(url, { headers });
     return response.data?.data ?? [];
 }
 
-// -----------------------------------------------------------------------------
-// 2. CSV GENERATION
-// -----------------------------------------------------------------------------
+/**
+ * Strip HTML tags and decode basic HTML entities
+ */
 function stripHtmlTags(text: string | undefined): string {
-    if (!text) return "";
-    // Remove all HTML tags
-    const noTags = text.replace(/<[^>]*>/g, "");
-    // Decode common HTML entities:
-    return noTags
-        .replace(/&amp;/g, "&")
-        .replace(/&lt;/g, "<")
-        .replace(/&gt;/g, ">")
-        .replace(/&quot;/g, '"')
-        .replace(/&#39;/g, "'");
+    if (!text) return '';
+    // Remove all <...> tags
+    const noTags = text.replace(/<[^>]*>/g, '');
+    return decodeHTMLEntities(noTags);
 }
 
-function flattenDeal(deal: any): Record<string, string> {
-    const safeGet = (obj: any, path: string, defaultVal = "") => {
-        const keys = path.split(".");
-        let current = obj;
-        for (const k of keys) {
-            if (typeof current !== "object" || current === null || !(k in current)) {
-                return defaultVal;
-            }
-            current = current[k];
-        }
-        return current ?? defaultVal;
-    };
+/**
+ * Basic HTML entity decoding
+ */
+function decodeHTMLEntities(text: string): string {
+    return text
+        .replace(/&quot;/g, '"')
+        .replace(/&#39;/g, "'")
+        .replace(/&amp;/g, '&')
+        .replace(/&lt;/g, '<')
+        .replace(/&gt;/g, '>');
+}
 
+/**
+ * Safely retrieve nested property by dot-notation
+ */
+function safeGet(obj: any, path: string, defaultValue: any = ''): any {
+    return path.split('.').reduce((acc, key) => {
+        if (acc && typeof acc === 'object' && key in acc) {
+            return acc[key];
+        }
+        return defaultValue;
+    }, obj);
+}
+
+/**
+ * Flatten a deal object similarly to the Python approach
+ */
+function flattenDeal(deal: any): Record<string, any> {
     return {
-        name: deal?.name ?? "",
-        stage: deal?.stage ?? "",
-        product_name: safeGet(deal, "product.name"),
-        value: deal?.value ?? "",
-        owner_email: safeGet(deal, "owner.email"),
-        organization_name: safeGet(deal, "organization.name"),
-        contact_email: safeGet(deal, "contact.email"),
-        referrer_email: safeGet(deal, "referrer.email"),
-        engagement_name: safeGet(deal, "engagement.name"),
-        engagement_date: safeGet(deal, "engagement.date"),
-        metrics_product_name: safeGet(deal, "metrics.product.name"),
-        metrics_label: safeGet(deal, "metrics.label"),
-        metric1_estimated: String(deal?.metric1_estimated ?? ""),
-        metric1_actual: String(deal?.metric1_actual ?? ""),
-        metric2_estimated: String(deal?.metric2_estimated ?? ""),
-        metric2_actual: String(deal?.metric2_actual ?? ""),
-        metric3_estimated: String(deal?.metric3_estimated ?? ""),
-        metric3_actual: String(deal?.metric3_actual ?? ""),
-        metric4_estimated: String(deal?.metric4_estimated ?? ""),
-        metric4_actual: String(deal?.metric4_actual ?? ""),
+        name: deal?.name ?? '',
+        stage: deal?.stage ?? '',
+        product_name: safeGet(deal, 'product.name'),
+        value: deal?.value ?? '',
+        owner_email: safeGet(deal, 'owner.email'),
+        organization_name: safeGet(deal, 'organization.name'),
+        contact_email: safeGet(deal, 'contact.email'),
+        referrer_email: safeGet(deal, 'referrer.email'),
+        engagement_name: safeGet(deal, 'engagement.name'),
+        engagement_date: safeGet(deal, 'engagement.date'),
+        metrics_product_name: safeGet(deal, 'metrics.product.name'),
+        metrics_label: safeGet(deal, 'metrics.label'),
+        metric1_estimated: deal?.metric1_estimated ?? '',
+        metric1_actual: deal?.metric1_actual ?? '',
+        metric2_estimated: deal?.metric2_estimated ?? '',
+        metric2_actual: deal?.metric2_actual ?? '',
+        metric3_estimated: deal?.metric3_estimated ?? '',
+        metric3_actual: deal?.metric3_actual ?? '',
+        metric4_estimated: deal?.metric4_estimated ?? '',
+        metric4_actual: deal?.metric4_actual ?? '',
         notes: stripHtmlTags(deal?.notes),
     };
 }
 
-function generateCsv(deals: any[]): string {
+/**
+ * Convert array of deals to CSV in memory
+ */
+function generateCsvInMemory(deals: any[]): string {
     const columns = [
-        "name",
-        "stage",
-        "product_name",
-        "value",
-        "owner_email",
-        "organization_name",
-        "contact_email",
-        "referrer_email",
-        "engagement_name",
-        "engagement_date",
-        "metrics_product_name",
-        "metrics_label",
-        "metric1_estimated",
-        "metric1_actual",
-        "metric2_estimated",
-        "metric2_actual",
-        "metric3_estimated",
-        "metric3_actual",
-        "metric4_estimated",
-        "metric4_actual",
-        "notes",
+        'name',
+        'stage',
+        'product_name',
+        'value',
+        'owner_email',
+        'organization_name',
+        'contact_email',
+        'referrer_email',
+        'engagement_name',
+        'engagement_date',
+        'metrics_product_name',
+        'metrics_label',
+        'metric1_estimated',
+        'metric1_actual',
+        'metric2_estimated',
+        'metric2_actual',
+        'metric3_estimated',
+        'metric3_actual',
+        'metric4_estimated',
+        'metric4_actual',
+        'notes',
     ];
-
-    const records = deals.map(flattenDeal);
-
-    // Using "csv-stringify/sync" to create CSV
-    const csvOutput = stringify(records, {
-        header: true,
-        columns,
-    });
-    return csvOutput;
+    const flattenedDeals = deals.map(flattenDeal);
+    return stringify(flattenedDeals, { header: true, columns });
 }
 
-// -----------------------------------------------------------------------------
-// 3. UPLOAD FILE
-// -----------------------------------------------------------------------------
-async function uploadCsvToDirectus(
-    csvContent: string,
+/**
+ * Upload the CSV to Directus, ensuring the file goes into folder "Reports"
+ */
+async function uploadFileInMemory(
+    fileBuffer: Buffer,
     fileName: string,
     baseUrl: string,
-    token: string
-) {
+    token: string,
+    mimeType: string = 'text/csv',
+): Promise<void> {
     const foldersEndpoint = `${baseUrl}/folders`;
     const filesEndpoint = `${baseUrl}/files`;
-    const headers = {Authorization: `Bearer ${token}`};
+    const authHeaders = { Authorization: `Bearer ${token}` };
 
-    // Step A: Get or create Reports folder
-    let folderId: string | undefined;
-    try {
-        const folderRes = await axios.get(foldersEndpoint, {
-            headers,
-            params: {
-                "filter[name][_eq]": "Reports",
-            },
-            httpsAgent: new (require("https").Agent)({rejectUnauthorized: false}),
-        });
-        const folderData = folderRes.data?.data ?? [];
-        if (folderData.length > 0) {
-            folderId = folderData[0].id;
-        } else {
-            // Create folder
-            const createRes = await axios.post(
-                foldersEndpoint,
-                {name: "Reports", parent: null},
-                {
-                    headers,
-                    httpsAgent: new (require("https").Agent)({
-                        rejectUnauthorized: false,
-                    }),
-                }
-            );
-            folderId = createRes.data?.data?.id;
-        }
-    } catch (error: any) {
-        throw new Error(
-            `Error checking/creating 'Reports' folder: ${error?.response?.data || error}`
-        );
-    }
-
-    // Step B: Check if a file with the same name already exists
-    let existingFileId: string | undefined;
-    try {
-        const existingFileRes = await axios.get(filesEndpoint, {
-            headers,
-            params: {
-                "filter[folder][_eq]": folderId,
-                "filter[filename_download][_eq]": fileName,
-            },
-            httpsAgent: new (require("https").Agent)({rejectUnauthorized: false}),
-        });
-        const existingFileData = existingFileRes.data?.data ?? [];
-        if (existingFileData.length > 0) {
-            existingFileId = existingFileData[0].id;
-        }
-    } catch (error: any) {
-        throw new Error(
-            `Error searching for existing file: ${error?.response?.data || error}`
-        );
-    }
-
-    // Step C: Upload (PATCH if exists, otherwise POST)
-    // We'll use form-data for multipart upload
-    const formData = new FormData();
-    formData.append("folder", folderId!);
-    // fileName, file content, and "text/csv" mime type
-    formData.append("file", csvContent, {
-        filename: fileName,
-        contentType: "text/csv",
+    // 1) Get or create "Reports" folder
+    let folderId: string;
+    let res = await axios.get(foldersEndpoint, {
+        headers: authHeaders,
+        params: { 'filter[name][_eq]': 'Reports' },
     });
+    let data = res.data?.data ?? [];
 
-    try {
-        if (existingFileId) {
-            // PATCH existing
-            await axios.patch(`${filesEndpoint}/${existingFileId}`, formData, {
-                headers: {
-                    ...headers,
-                    ...formData.getHeaders(),
-                },
-                httpsAgent: new (require("https").Agent)({rejectUnauthorized: false}),
-            });
-        } else {
-            // POST new
-            await axios.post(filesEndpoint, formData, {
-                headers: {
-                    ...headers,
-                    ...formData.getHeaders(),
-                },
-                httpsAgent: new (require("https").Agent)({rejectUnauthorized: false}),
-            });
-        }
-    } catch (error: any) {
-        throw new Error(
-            `Error uploading/replacing file in Directus: ${error?.response?.data || error}`
+    if (data.length > 0) {
+        folderId = data[0].id;
+    } else {
+        // Create the "Reports" folder if not found
+        res = await axios.post(
+            foldersEndpoint,
+            { name: 'Reports', parent: null },
+            { headers: authHeaders },
         );
+        folderId = res.data?.data?.id;
+    }
+
+    // 2) Check if a file with the same name exists in that folder
+    res = await axios.get(filesEndpoint, {
+        headers: authHeaders,
+        params: {
+            'filter[folder][_eq]': folderId,
+            'filter[filename_download][_eq]': fileName,
+        },
+    });
+    data = res.data?.data ?? [];
+
+    /**
+     * 3) We must specify the folder via the "data" field in the multipart form.
+     * Otherwise, Directus might ignore it and place the file in the root folder.
+     */
+    const formData = new FormData();
+    formData.append('file', fileBuffer, { filename: fileName, contentType: mimeType });
+
+    // Send the folder as metadata in the "data" part of the form
+    const metadata = { folder: folderId };
+    formData.append('data', JSON.stringify(metadata));
+
+    // 4) If the file already exists, PATCH it; otherwise, POST
+    if (data.length > 0) {
+        const existingFileId = data[0].id;
+        await axios.patch(`${filesEndpoint}/${existingFileId}`, formData, {
+            headers: {
+                ...formData.getHeaders(),
+                Authorization: `Bearer ${token}`,
+            },
+        });
+    } else {
+        await axios.post(filesEndpoint, formData, {
+            headers: {
+                ...formData.getHeaders(),
+                Authorization: `Bearer ${token}`,
+            },
+        });
     }
 }
 
-// -----------------------------------------------------------------------------
-// Netlify Function: Handler
-// -----------------------------------------------------------------------------
-// netlify/functions/export_deals.ts
-export const handler: Handler = async (event, context) => {
+/**
+ * Netlify Function entry:
+ *  1) Fetch deals
+ *  2) Generate CSV
+ *  3) Upload CSV into "Reports" folder in Directus
+ */
+export const handler: Handler = async () => {
     try {
-        // Read environment variables
-        const opticalUrl = process.env.OPTICAL_URL;
-        const opticalToken = process.env.OPTICAL_TOKEN;
+        // Build a filename like deals-YYYYMMDD-HHh.csv
+        const now = new Date();
+        const year = now.getFullYear();
+        const month = String(now.getMonth() + 1).padStart(2, '0');
+        const day = String(now.getDate()).padStart(2, '0');
+        const hour = String(now.getHours()).padStart(2, '0');
+        const csvFilename = `deals-${year}${month}${day}-${hour}h.csv`;
 
-        if (!opticalUrl || !opticalToken) {
-            throw new Error("Missing OPTICAL_URL or OPTICAL_TOKEN environment variables");
-        }
+        // 1) Fetch deals
+        const deals = await fetchDeals(OPTICAL_URL!, OPTICAL_TOKEN!);
 
-        // Example: Make a request to the optical URL using the token
-        const response = await fetch(opticalUrl, {
-            method: "GET",
-            headers: {
-                Authorization: `Bearer ${opticalToken}`,
-            },
-        });
+        // 2) Generate CSV
+        const csvString = generateCsvInMemory(deals);
+        const csvBuffer = Buffer.from(csvString, 'utf-8');
 
-        if (!response.ok) {
-            // If the request was not successful, throw an error to see details in logs
-            const errorText = await response.text();
-            throw new Error(`Request failed: ${response.status} - ${errorText}`);
-        }
+        // 3) Upload CSV to "Reports" folder in Directus
+        await uploadFileInMemory(csvBuffer, csvFilename, OPTICAL_URL!, OPTICAL_TOKEN!);
 
-        // Parse the response from the external service
-        const data = await response.json();
+        const responseBody = {
+            status: 'success',
+            file_uploaded: csvFilename,
+            record_count: deals.length,
+        };
 
-        // Return a successful response
         return {
             statusCode: 200,
-            body: JSON.stringify({
-                message: "Export deals successful",
-                data,
-            }),
+            body: JSON.stringify(responseBody),
         };
-    } catch (error) {
-        console.error("Error in export_deals function:", error);
+    } catch (error: any) {
+        console.error('Error exporting deals:', error);
+        const errorBody = {
+            status: 'error',
+            error_message: error?.message || String(error),
+        };
         return {
             statusCode: 500,
-            body: JSON.stringify({
-                message: "An error occurred in export_deals",
-                error: (error as Error).message || error,
-            }),
+            body: JSON.stringify(errorBody),
         };
     }
 };
