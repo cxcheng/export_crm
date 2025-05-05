@@ -1,9 +1,9 @@
 // netlify/functions/export_deals.ts
 
-import { Handler } from '@netlify/functions';
+import {Handler} from '@netlify/functions';
 import axios from 'axios';
 import FormData from 'form-data';
-import { stringify } from 'csv-stringify/sync';
+import {stringify} from 'csv-stringify/sync';
 
 const OPTICAL_URL = process.env.OPTICAL_URL;
 const OPTICAL_TOKEN = process.env.OPTICAL_TOKEN;
@@ -44,10 +44,10 @@ const fieldsList = [
  */
 async function fetchDeals(baseUrl: string, token: string): Promise<any[]> {
     const queryParams = fieldsList.map((f) => `fields[]=${encodeURIComponent(f)}`).join('&');
-    const url = `${baseUrl}/items/deals?${queryParams}`;
+    const url = `${baseUrl}/items/deals?limit=-1&${queryParams}`;
 
-    const headers = { Authorization: `Bearer ${token}` };
-    const response = await axios.get(url, { headers });
+    const headers = {Authorization: `Bearer ${token}`};
+    const response = await axios.get(url, {headers});
     return response.data?.data ?? [];
 }
 
@@ -90,7 +90,7 @@ function safeGet(obj: any, path: string, defaultValue: any = ''): any {
  */
 function flattenDeal(deal: any): Record<string, any> {
     return {
-        name: deal?.name ?? '',
+        deal_name: deal?.name ?? '',
         stage: deal?.stage ?? '',
         product_name: safeGet(deal, 'product.name'),
         value: deal?.value ?? '',
@@ -119,7 +119,7 @@ function flattenDeal(deal: any): Record<string, any> {
  */
 function generateCsvInMemory(deals: any[]): string {
     const columns = [
-        'name',
+        'deal_name',
         'stage',
         'product_name',
         'value',
@@ -142,7 +142,7 @@ function generateCsvInMemory(deals: any[]): string {
         'notes',
     ];
     const flattenedDeals = deals.map(flattenDeal);
-    return stringify(flattenedDeals, { header: true, columns });
+    return stringify(flattenedDeals, {header: true, columns});
 }
 
 /**
@@ -157,13 +157,13 @@ async function uploadFileInMemory(
 ): Promise<void> {
     const foldersEndpoint = `${baseUrl}/folders`;
     const filesEndpoint = `${baseUrl}/files`;
-    const authHeaders = { Authorization: `Bearer ${token}` };
+    const authHeaders = {Authorization: `Bearer ${token}`};
 
     // 1) Get or create "Reports" folder
     let folderId: string;
     let res = await axios.get(foldersEndpoint, {
         headers: authHeaders,
-        params: { 'filter[name][_eq]': 'Reports' },
+        params: {'filter[name][_eq]': 'Reports'},
     });
     let data = res.data?.data ?? [];
 
@@ -173,8 +173,8 @@ async function uploadFileInMemory(
         // Create the "Reports" folder if not found
         res = await axios.post(
             foldersEndpoint,
-            { name: 'Reports', parent: null },
-            { headers: authHeaders },
+            {name: 'Reports', parent: null},
+            {headers: authHeaders},
         );
         folderId = res.data?.data?.id;
     }
@@ -183,7 +183,6 @@ async function uploadFileInMemory(
     res = await axios.get(filesEndpoint, {
         headers: authHeaders,
         params: {
-            'filter[folder][_eq]': folderId,
             'filter[filename_download][_eq]': fileName,
         },
     });
@@ -194,11 +193,11 @@ async function uploadFileInMemory(
      * Otherwise, Directus might ignore it and place the file in the root folder.
      */
     const formData = new FormData();
-    formData.append('file', fileBuffer, { filename: fileName, contentType: mimeType });
+    formData.append('file', fileBuffer, {filename: fileName, contentType: mimeType});
 
     // Send the folder as metadata in the "data" part of the form
-    const metadata = { folder: folderId };
-    formData.append('data', JSON.stringify(metadata));
+    //const metadata = { folder: folderId };
+    formData.append('folder', folderId);
 
     // 4) If the file already exists, PATCH it; otherwise, POST
     if (data.length > 0) {
@@ -227,13 +226,13 @@ async function uploadFileInMemory(
  */
 export const handler: Handler = async () => {
     try {
-        // Build a filename like deals-YYYYMMDD-HHh.csv
+        // Build a filename like deals-YYYYMMDD-HH00.csv
         const now = new Date();
         const year = now.getFullYear();
         const month = String(now.getMonth() + 1).padStart(2, '0');
         const day = String(now.getDate()).padStart(2, '0');
-        const hour = String(now.getHours()).padStart(2, '0');
-        const csvFilename = `deals-${year}${month}${day}-${hour}h.csv`;
+        const hour = String(now.getHours() + 8).padStart(2, '0');
+        const csvFilename = `deals-${year}${month}${day}-${hour}00.csv`;
 
         // 1) Fetch deals
         const deals = await fetchDeals(OPTICAL_URL!, OPTICAL_TOKEN!);
